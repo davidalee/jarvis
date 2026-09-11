@@ -211,12 +211,20 @@ whether native tool calling beats the local models' measured 97–100% routing a
 3. **`llm-proxy-model` cannot be omitted on a REST backend.** It is the process making the
    outbound call. Without `MODEL_SERVICE_URL` the API returns 500 "passthrough-only".
 
-4. **Image bloat: `torch` pulls CUDA wheels by default.** `requirements-base.txt` installs
-   `torch>=2.13.0` on every platform. From default PyPI on Linux this drags in the NVIDIA CUDA
-   wheels — several GB — on a box with no GPU. Install from
-   `--index-url https://download.pytorch.org/whl/cpu` instead (~200 MB, same functionality).
-   **This is the single biggest disk lever.** With it, total footprint is ~5–7 GB; without it,
-   comfortably double.
+4. **Image bloat: `torch` pulls CUDA wheels into a file named `.cpu`.** `Dockerfile.cpu` line 41
+   is `RUN pip install --no-cache-dir -r requirements-base.txt` — plain PyPI. `requirements-base.txt`
+   pins `torch>=2.13.0`, which on Linux resolves to the CUDA-bundled wheel and drags the `nvidia-*`
+   packages in, several GB, on a box with no GPU. Install torch from the CPU index first; pip then
+   sees it satisfied and will not refetch:
+
+   ```dockerfile
+   RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+   RUN pip install --no-cache-dir -r requirements-base.txt
+   ```
+
+   **This is the single biggest disk lever** — ~200 MB instead of ~2.5–3 GB, same functionality.
+   With it, total footprint is ~5–7 GB; without it, comfortably double. This is arguably an upstream
+   bug rather than a local preference.
 
 5. **The adapter-training stack is dead weight here.** `requirements-base.txt` also carries
    `peft`, `datasets`, `trl`, `accelerate`, `bitsandbytes` for adapter training — and
@@ -245,9 +253,15 @@ whether native tool calling beats the local models' measured 97–100% routing a
 
 ## Open decisions
 
-1. **Strip `requirements-base.txt`?** Removing the dormant training stack means carrying a fork
-   of a file upstream will keep changing. Keeping it costs ~3 GB. Both fit in ~19 GB.
-   *Undecided.*
+1. **Strip `requirements-base.txt`? — Recommendation: no, fix `Dockerfile.cpu` instead.**
+   The bulk of the saving is not in the requirements file. Blocker 4 recovers ~2.5 GB by
+   installing torch from the CPU index, and touches no requirements file, so there is no fork of
+   an upstream-churning file to maintain. The remaining candidates — `peft`, `trl`, `datasets`,
+   `bitsandbytes`, `accelerate`, all present only for the dormant adapter-training path — are
+   ~1–1.5 GB, which is a poor trade against the merge burden given ~19 GB free. Note
+   `sentence-transformers` (and therefore `torch` itself) **is** genuinely required for
+   command-center's memory-recall vector search, so torch cannot simply be dropped.
+   *Recommended, not yet ratified.*
 2. **Upstream the Anthropic tool-calling fix?** It is a real bug in the parent project, not a
    local workaround. *Undecided.*
 
